@@ -73,6 +73,7 @@ import functools
 import itertools
 import sys
 import threading
+import greenlet
 
 
 class _State(threading.local):
@@ -209,10 +210,17 @@ def wrap(fn):
                 callback(*args, **kwargs)
         else:
             callback(*args, **kwargs)
+
+    def greenletify(function):
+        def wrapped(*args, **kwargs):
+            gr = greenlet.greenlet(function)
+            return gr.switch(*args, **kwargs)
+        return wrapped
+
     if _state.contexts:
-        return _StackContextWrapper(wrapped, fn, _state.contexts)
+        return _StackContextWrapper(greenletify(wrapped), fn, _state.contexts)
     else:
-        return _StackContextWrapper(fn)
+        return _StackContextWrapper(greenletify(fn))
 
 
 @contextlib.contextmanager
