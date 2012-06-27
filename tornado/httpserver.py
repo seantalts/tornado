@@ -30,9 +30,8 @@ import Cookie
 import logging
 import socket
 import time
-import urlparse
 
-from tornado.escape import utf8, native_str, parse_qs_bytes
+from tornado.escape import native_str, parse_qs_bytes
 from tornado import httputil
 from tornado import iostream
 from tornado.netutil import TCPServer
@@ -161,9 +160,6 @@ class HTTPConnection(object):
     def __init__(self, stream, address, request_callback, no_keep_alive=False,
                  xheaders=False):
         self.stream = stream
-        if self.stream.socket.family not in (socket.AF_INET, socket.AF_INET6):
-            # Unix (or other) socket; fake the remote address
-            address = ('0.0.0.0', 0)
         self.address = address
         self.request_callback = request_callback
         self.no_keep_alive = no_keep_alive
@@ -238,9 +234,20 @@ class HTTPConnection(object):
             if not version.startswith("HTTP/"):
                 raise _BadRequestException("Malformed HTTP version in HTTP Request-Line")
             headers = httputil.HTTPHeaders.parse(data[eol:])
+
+            # HTTPRequest wants an IP, not a full socket address
+            if getattr(self.stream.socket, 'family', socket.AF_INET) in (
+                socket.AF_INET, socket.AF_INET6):
+                # Jython 2.5.2 doesn't have the socket.family attribute,
+                # so just assume IP in that case.
+                remote_ip = self.address[0]
+            else:
+                # Unix (or other) socket; fake the remote address
+                remote_ip = '0.0.0.0'
+
             self._request = HTTPRequest(
                 connection=self, method=method, uri=uri, version=version,
-                headers=headers, remote_ip=self.address[0])
+                headers=headers, remote_ip=remote_ip)
 
             content_length = headers.get("Content-Length")
             if content_length:
@@ -261,27 +268,10 @@ class HTTPConnection(object):
 
     def _on_request_body(self, data):
         self._request.body = data
-        content_type = self._request.headers.get("Content-Type", "")
         if self._request.method in ("POST", "PATCH", "PUT"):
-            if content_type.startswith("application/x-www-form-urlencoded"):
-                arguments = parse_qs_bytes(native_str(self._request.body))
-                for name, values in arguments.iteritems():
-                    values = [v for v in values if v]
-                    if values:
-                        self._request.arguments.setdefault(name, []).extend(
-                            values)
-            elif content_type.startswith("multipart/form-data"):
-                fields = content_type.split(";")
-                for field in fields:
-                    k, sep, v = field.strip().partition("=")
-                    if k == "boundary" and v:
-                        httputil.parse_multipart_form_data(
-                            utf8(v), data,
-                            self._request.arguments,
-                            self._request.files)
-                        break
-                else:
-                    logging.warning("Invalid multipart/form-data")
+            httputil.parse_body_arguments(
+                self._request.headers.get("Content-Type", ""), data,
+                self._request.arguments, self._request.files)
         self.request_callback(self._request)
 
 
@@ -391,10 +381,8 @@ class HTTPRequest(object):
         self._start_time = time.time()
         self._finish_time = None
 
-        scheme, netloc, path, query, fragment = urlparse.urlsplit(native_str(uri))
-        self.path = path
-        self.query = query
-        arguments = parse_qs_bytes(query)
+        self.path, sep, self.query = uri.partition('?')
+        arguments = parse_qs_bytes(self.query)
         self.arguments = {}
         for name, values in arguments.iteritems():
             values = [v for v in values if v]

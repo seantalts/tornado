@@ -33,7 +33,7 @@ class GenTest(AsyncTestCase):
         def f():
             (yield gen.Callback("k1"))()
             res = yield gen.Wait("k1")
-            assert res is None
+            self.assertTrue(res is None)
             self.stop()
         self.run_gen(f)
 
@@ -168,7 +168,7 @@ class GenTest(AsyncTestCase):
         def f():
             try:
                 yield gen.Wait("k1")
-                raise "did not get expected exception"
+                raise Exception("did not get expected exception")
             except gen.UnknownKeyError:
                 pass
             self.stop()
@@ -179,7 +179,7 @@ class GenTest(AsyncTestCase):
         def f():
             try:
                 yield gen.Wait("k1")
-                raise "did not get expected exception"
+                raise Exception("did not get expected exception")
             except gen.UnknownKeyError:
                 pass
             (yield gen.Callback("k2"))("v2")
@@ -193,7 +193,7 @@ class GenTest(AsyncTestCase):
             self.orphaned_callback = yield gen.Callback(1)
         try:
             self.run_gen(f)
-            raise "did not get expected exception"
+            raise Exception("did not get expected exception")
         except gen.LeakedCallbackError:
             pass
         self.orphaned_callback()
@@ -248,6 +248,26 @@ class GenTest(AsyncTestCase):
 
             self.stop()
         self.run_gen(f)
+
+    def test_stack_context_leak(self):
+        # regression test: repeated invocations of a gen-based
+        # function should not result in accumulated stack_contexts
+        from tornado import stack_context
+
+        @gen.engine
+        def inner(callback):
+            yield gen.Task(self.io_loop.add_callback)
+            callback()
+
+        @gen.engine
+        def outer():
+            for i in xrange(10):
+                yield gen.Task(inner)
+            stack_increase = len(stack_context._state.contexts) - initial_stack_depth
+            self.assertTrue(stack_increase <= 2)
+            self.stop()
+        initial_stack_depth = len(stack_context._state.contexts)
+        self.run_gen(outer)
 
 
 class GenSequenceHandler(RequestHandler):

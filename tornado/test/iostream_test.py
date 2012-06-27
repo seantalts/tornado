@@ -5,7 +5,9 @@ from tornado.iostream import IOStream
 from tornado.testing import AsyncHTTPTestCase, LogTrapTestCase, get_unused_port
 from tornado.util import b
 from tornado.web import RequestHandler, Application
+import errno
 import socket
+import sys
 import time
 
 
@@ -91,6 +93,22 @@ class TestIOStream(AsyncHTTPTestCase, LogTrapTestCase):
         stream.connect(("localhost", port), connect_callback)
         self.wait()
         self.assertFalse(self.connect_called)
+        self.assertTrue(isinstance(stream.error, socket.error), stream.error)
+        if sys.platform != 'cygwin':
+            # cygwin's errnos don't match those used on native windows python
+            self.assertEqual(stream.error.args[0], errno.ECONNREFUSED)
+
+    def test_gaierror(self):
+        # Test that IOStream sets its exc_info on getaddrinfo error
+        s = socket.socket(socket.AF_INET, socket.SOCK_STREAM, 0)
+        stream = IOStream(s, io_loop=self.io_loop)
+        stream.set_close_callback(self.stop)
+        # To reliably generate a gaierror we use a malformed domain name
+        # instead of a name that's simply unlikely to exist (since
+        # opendns and some ISPs return bogus addresses for nonexistent
+        # domains instead of the proper error codes).
+        stream.connect(('an invalid domain', 54321))
+        self.assertTrue(isinstance(stream.error, socket.gaierror), stream.error)
 
     def test_connection_closed(self):
         # When a server sends a response and then closes the connection,
@@ -124,7 +142,7 @@ class TestIOStream(AsyncHTTPTestCase, LogTrapTestCase):
                 self.stop()
 
             def final_callback(data):
-                assert not data
+                self.assertFalse(data)
                 final_called.append(True)
                 self.stop()
             server.read_bytes(6, callback=final_callback,
